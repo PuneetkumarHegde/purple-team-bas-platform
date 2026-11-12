@@ -1,0 +1,96 @@
+# ©AngelaMos | 2026
+# dev.compose.yml
+
+name: apisec-dev
+
+services:
+  # PostgreSQL Database
+  db:
+    image: postgres:18-alpine
+    container_name: apisec_db_dev
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-apiuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-apipass}
+      POSTGRES_DB: ${POSTGRES_DB:-apisecurity}
+    ports:
+      - "127.0.0.1:${HOST_DB_PORT:-44432}:5432"
+    volumes:
+      - postgres_data_dev:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-apiuser} -d ${POSTGRES_DB:-apisecurity}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - apisec_network
+
+  # FastAPI Backend
+  backend:
+    build:
+      context: .
+      dockerfile: conf/docker/dev/fastapi.dockerfile
+    container_name: apisec_backend_dev
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-apiuser}:${POSTGRES_PASSWORD:-apipass}@db:5432/${POSTGRES_DB:-apisecurity}
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-this}
+      DEBUG: "true"
+      BACKEND_HOST: ${BACKEND_HOST:-0.0.0.0}
+      BACKEND_PORT: ${BACKEND_PORT:-8000}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:44173,http://localhost:44380}
+    ports:
+      - "127.0.0.1:${HOST_BACKEND_PORT:-44800}:8000"
+    volumes:
+      - ./backend:/app
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - apisec_network
+    restart: unless-stopped
+
+  # React Frontend - Vite HMR
+  # node_modules lives in a volume so the bind mount cannot hide it, and
+  # every start installs the CURRENT package.json into it: a package added
+  # on the host appears after a restart, no volume deletion needed.
+  frontend:
+    build:
+      context: .
+      dockerfile: conf/docker/dev/vite.dockerfile
+    container_name: apisec_frontend_dev
+    command: sh -c "pnpm install && exec pnpm dev --host 0.0.0.0"
+    environment:
+      CI: "true"
+      VITE_API_URL: ${VITE_API_URL:-http://localhost:44800}
+    ports:
+      - "127.0.0.1:${HOST_FRONTEND_PORT:-44173}:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    networks:
+      - apisec_network
+    restart: unless-stopped
+
+  # Nginx Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: apisec_nginx_dev
+    ports:
+      - "127.0.0.1:${HOST_NGINX_PORT:-44380}:80"
+    volumes:
+      - ./conf/nginx/dev.nginx:/etc/nginx/nginx.conf:ro
+      - ./conf/nginx/http.conf:/etc/nginx/http.conf:ro
+    depends_on:
+      - backend
+      - frontend
+    networks:
+      - apisec_network
+    restart: unless-stopped
+
+volumes:
+  postgres_data_dev:
+    name: apisec_postgres_data_dev
+
+networks:
+  apisec_network:
+    name: apisec_network_dev
+    driver: bridge
